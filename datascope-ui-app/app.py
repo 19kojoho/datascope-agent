@@ -15,6 +15,11 @@ PORT = 8000
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT_NAME", "claude-sonnet-endpoint")
 SQL_WAREHOUSE_ID = os.environ.get("DATABRICKS_SQL_WAREHOUSE_ID", "")
 GITHUB_MCP_APP_URL = os.environ.get("GITHUB_MCP_APP_URL", "")
+VS_ENDPOINT = os.environ.get("VS_ENDPOINT_NAME", "datascope-vs-endpoint")
+VS_INDEX = os.environ.get("VS_INDEX_NAME", "novatech.gold.datascope_patterns_index")
+LAKEBASE_ENABLED = os.environ.get("LAKEBASE_ENABLED", "true").lower() == "true"
+LAKEBASE_CATALOG = os.environ.get("LAKEBASE_CATALOG", "novatech")
+LAKEBASE_SCHEMA = os.environ.get("LAKEBASE_SCHEMA", "datascope")
 
 # OAuth token cache - short TTL to pick up permission changes
 _oauth_token = None
@@ -102,10 +107,152 @@ def get_auth_headers():
 
 DATABRICKS_HOST = get_databricks_host()
 
+
+# ============================================================================
+# Lakebase Functions for Conversation State
+# ============================================================================
+
+import uuid
+from datetime import datetime
+
+def generate_id():
+    """Generate a unique ID."""
+    return str(uuid.uuid4())
+
+
+def save_conversation(conversation_id: str, title: str, user_id: str = "anonymous") -> bool:
+    """Save a new conversation to Lakebase."""
+    if not LAKEBASE_ENABLED:
+        return False
+    try:
+        table = f"{LAKEBASE_CATALOG}.{LAKEBASE_SCHEMA}.conversations"
+        query = f"""
+        INSERT INTO {table} (conversation_id, user_id, title, created_at, updated_at, status)
+        VALUES ('{conversation_id}', '{user_id}', '{title.replace("'", "''")}', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), 'active')
+        """
+        execute_sql_internal(query)
+        return True
+    except Exception as e:
+        print(f"Error saving conversation: {e}")
+        return False
+
+
+def save_message(conversation_id: str, role: str, content: str, tool_calls: str = None, tool_call_id: str = None) -> str:
+    """Save a message to Lakebase."""
+    if not LAKEBASE_ENABLED:
+        return None
+    try:
+        message_id = generate_id()
+        table = f"{LAKEBASE_CATALOG}.{LAKEBASE_SCHEMA}.messages"
+        content_escaped = content.replace("'", "''") if content else ""
+        tool_calls_escaped = tool_calls.replace("'", "''") if tool_calls else "NULL"
+        tool_call_id_val = f"'{tool_call_id}'" if tool_call_id else "NULL"
+        tool_calls_val = f"'{tool_calls_escaped}'" if tool_calls else "NULL"
+
+        query = f"""
+        INSERT INTO {table} (message_id, conversation_id, role, content, tool_calls, tool_call_id, created_at)
+        VALUES ('{message_id}', '{conversation_id}', '{role}', '{content_escaped}', {tool_calls_val}, {tool_call_id_val}, CURRENT_TIMESTAMP())
+        """
+        execute_sql_internal(query)
+        return message_id
+    except Exception as e:
+        print(f"Error saving message: {e}")
+        return None
+
+
+def load_conversation_messages(conversation_id: str, limit: int = 20) -> list:
+    """Load recent messages for a conversation from Lakebase."""
+    if not LAKEBASE_ENABLED:
+        return []
+    try:
+        table = f"{LAKEBASE_CATALOG}.{LAKEBASE_SCHEMA}.messages"
+        query = f"""
+        SELECT role, content, tool_calls, tool_call_id
+        FROM {table}
+        WHERE conversation_id = '{conversation_id}'
+        ORDER BY created_at DESC
+        LIMIT {limit}
+        """
+        result = execute_sql_internal(query, return_data=True)
+        if not result:
+            return []
+
+        # Convert to message format and reverse (oldest first)
+        messages = []
+        for row in reversed(result):
+            role, content, tool_calls, tool_call_id = row
+            msg = {"role": role, "content": content or ""}
+            if tool_calls:
+                msg["tool_calls"] = json.loads(tool_calls)
+            if tool_call_id:
+                msg["tool_call_id"] = tool_call_id
+            messages.append(msg)
+        return messages
+    except Exception as e:
+        print(f"Error loading messages: {e}")
+        return []
+
+
+def save_investigation(conversation_id: str, question: str, tools_used: list, summary: str, duration: float) -> str:
+    """Save investigation metadata to Lakebase."""
+    if not LAKEBASE_ENABLED:
+        return None
+    try:
+        investigation_id = generate_id()
+        table = f"{LAKEBASE_CATALOG}.{LAKEBASE_SCHEMA}.investigations"
+        tools_json = json.dumps(tools_used).replace("'", "''")
+        summary_escaped = summary.replace("'", "''") if summary else ""
+
+        query = f"""
+        INSERT INTO {table} (investigation_id, conversation_id, question, status, started_at, completed_at, duration_seconds, tools_used, summary)
+        VALUES ('{investigation_id}', '{conversation_id}', '{question.replace("'", "''")}', 'completed', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), {duration}, '{tools_json}', '{summary_escaped[:1000]}')
+        """
+        execute_sql_internal(query)
+        return investigation_id
+    except Exception as e:
+        print(f"Error saving investigation: {e}")
+        return None
+
+
+def execute_sql_internal(query: str, return_data: bool = False):
+    """Execute SQL via Databricks - internal version without formatting."""
+    try:
+        url = f"{DATABRICKS_HOST}/api/2.0/sql/statements"
+        headers = get_auth_headers()
+
+        resp = requests.post(url, headers=headers, json={
+            "warehouse_id": SQL_WAREHOUSE_ID,
+            "statement": query,
+            "wait_timeout": "30s"
+        })
+
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        if data.get("status", {}).get("state") == "SUCCEEDED":
+            if return_data:
+                return data.get("result", {}).get("data_array", [])
+            return True
+        return None
+    except Exception:
+        return None
+
+
+# In-memory conversation store (fallback when Lakebase is unavailable)
+_conversations = {}
+
+
 # System prompt
 SYSTEM_PROMPT = """You are DataScope, a Data Debugging Agent for NovaTech's Databricks data platform.
 
 Your job is to investigate data quality issues and explain them in clear, simple English.
+
+## Investigation Strategy
+
+1. **FIRST**: Use search_patterns to find similar past issues - this gives you context and suggested SQL
+2. **THEN**: Use execute_sql to verify the issue with actual data
+3. **OPTIONALLY**: Use search_code to find the transformation that caused the bug
 
 ## Available Tables
 
@@ -319,6 +466,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const messagesEl = document.getElementById('messages');
         const questionEl = document.getElementById('question');
         const submitBtn = document.getElementById('submit');
+        let currentConversationId = null;  // Track conversation for follow-ups
 
         function addMessage(content, isUser) {
             const div = document.createElement('div');
@@ -357,11 +505,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({question: question})
+                    body: JSON.stringify({
+                        question: question,
+                        conversation_id: currentConversationId  // Include for follow-ups
+                    })
                 });
 
                 const data = await response.json();
                 loadingBubble.innerHTML = formatMarkdown(data.response || data.error || 'No response');
+
+                // Store conversation ID for follow-up questions
+                if (data.conversation_id) {
+                    currentConversationId = data.conversation_id;
+                }
             } catch (e) {
                 loadingBubble.innerHTML = '<strong>Error:</strong> ' + e.message;
             }
@@ -371,8 +527,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         function askExample(btn) {
+            // Start a new conversation for example questions
+            currentConversationId = null;
             questionEl.value = btn.textContent;
             investigate();
+        }
+
+        function newConversation() {
+            currentConversationId = null;
+            messagesEl.innerHTML = `
+                <div class="message assistant-msg">
+                    <div class="bubble">
+                        <strong>Welcome!</strong> I'm DataScope, your data debugging assistant.<br><br>
+                        Ask me questions about data quality issues in plain English. For example:<br>
+                        - "Why do some customers have NULL churn_risk?"<br>
+                        - "Why does ARR seem lower than expected?"<br><br>
+                        I'll investigate and explain what I find.
+                    </div>
+                </div>
+            `;
         }
 
         submitBtn.onclick = investigate;
@@ -444,10 +617,75 @@ def search_code(term: str) -> str:
         return f"Code search error: {str(e)}"
 
 
-def chat_with_llm(question: str) -> str:
-    """Send question to LLM and handle tool calls."""
+def search_patterns(query: str) -> str:
+    """Search for similar data quality patterns using Vector Search."""
+    try:
+        url = f"{DATABRICKS_HOST}/api/2.0/vector-search/indexes/{VS_INDEX}/query"
+        headers = get_auth_headers()
+
+        resp = requests.post(url, headers=headers, json={
+            "query_text": query,
+            "columns": ["pattern_id", "title", "symptoms", "root_cause", "resolution", "investigation_sql"],
+            "num_results": 3
+        })
+
+        if resp.status_code != 200:
+            return f"Vector search unavailable: {resp.status_code}"
+
+        data = resp.json()
+        results = data.get("result", {}).get("data_array", [])
+
+        if not results:
+            return "No similar patterns found."
+
+        out = ["**Similar Past Issues Found:**\n"]
+        for row in results:
+            pattern_id, title, symptoms, root_cause, resolution, investigation_sql = row[:6]
+            out.append(f"### {pattern_id}: {title}")
+            out.append(f"**Symptoms:** {symptoms[:200]}...")
+            out.append(f"**Root Cause:** {root_cause}")
+            out.append(f"**Resolution:** {resolution}")
+            if investigation_sql:
+                out.append(f"**Suggested SQL:** `{investigation_sql[:100]}...`")
+            out.append("")
+
+        return "\n".join(out)
+
+    except Exception as e:
+        return f"Pattern search error: {str(e)}"
+
+
+def chat_with_llm(question: str, conversation_id: str = None) -> tuple:
+    """Send question to LLM and handle tool calls.
+
+    Args:
+        question: The user's question
+        conversation_id: Optional conversation ID for multi-turn context
+
+    Returns:
+        Tuple of (response_text, conversation_id)
+    """
+    import time
+    start_time = time.time()
+
+    # Create or load conversation
+    if not conversation_id:
+        conversation_id = generate_id()
+        save_conversation(conversation_id, question[:100])
 
     tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_patterns",
+                "description": "Search for similar past data quality issues. Use this FIRST to get context on common patterns before investigating.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "Description of the data issue to find similar patterns for"}},
+                    "required": ["query"]
+                }
+            }
+        },
         {
             "type": "function",
             "function": {
@@ -474,10 +712,21 @@ def chat_with_llm(question: str) -> str:
         }
     ]
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": question}
-    ]
+    # Load conversation history if exists
+    history = load_conversation_messages(conversation_id)
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    # Add history (excluding system messages)
+    for msg in history:
+        if msg.get("role") != "system":
+            messages.append(msg)
+
+    # Add current question
+    messages.append({"role": "user", "content": question})
+
+    # Save user message to Lakebase
+    save_message(conversation_id, "user", question)
 
     url = f"{DATABRICKS_HOST}/serving-endpoints/{LLM_ENDPOINT}/invocations"
     headers = get_auth_headers()
@@ -494,7 +743,7 @@ def chat_with_llm(question: str) -> str:
             })
 
             if resp.status_code != 200:
-                return f"LLM Error: {resp.text[:300]}"
+                return (f"LLM Error: {resp.text[:300]}", conversation_id)
 
             data = resp.json()
             choice = data.get("choices", [{}])[0]
@@ -505,7 +754,10 @@ def chat_with_llm(question: str) -> str:
             # If LLM returns content without tool calls, it's done investigating
             if not tool_calls:
                 if content:
-                    return content
+                    duration = time.time() - start_time
+                    save_message(conversation_id, "assistant", content)
+                    save_investigation(conversation_id, question, tool_results_collected, content, duration)
+                    return (content, conversation_id)
                 # No content and no tool calls - ask for summary
                 break
 
@@ -513,7 +765,10 @@ def chat_with_llm(question: str) -> str:
             if content and len(content) > 300:
                 keywords = ["**What I Found**", "**The Problem**", "Root Cause", "How to Fix"]
                 if any(kw in content for kw in keywords):
-                    return content
+                    duration = time.time() - start_time
+                    save_message(conversation_id, "assistant", content)
+                    save_investigation(conversation_id, question, tool_results_collected, content, duration)
+                    return (content, conversation_id)
 
             # Execute tool calls
             messages.append(msg)
@@ -525,7 +780,10 @@ def chat_with_llm(question: str) -> str:
                 except:
                     args = {}
 
-                if name == "execute_sql":
+                if name == "search_patterns":
+                    result = search_patterns(args.get("query", ""))
+                    tool_results_collected.append(f"Pattern search: {args.get('query', '')[:50]}...")
+                elif name == "execute_sql":
                     result = execute_sql(args.get("query", ""))
                     tool_results_collected.append(f"SQL: {args.get('query', '')[:100]}...")
                 elif name == "search_code":
@@ -568,7 +826,7 @@ Write this response NOW."""
         })
 
         if resp.status_code != 200:
-            return f"Error generating summary: {resp.text[:200]}"
+            return (f"Error generating summary: {resp.text[:200]}", conversation_id)
 
         data = resp.json()
         choice = data.get("choices", [{}])[0]
@@ -576,16 +834,21 @@ Write this response NOW."""
         content = msg.get("content", "")
 
         if content:
-            return content
+            duration = time.time() - start_time
+            save_message(conversation_id, "assistant", content)
+            save_investigation(conversation_id, question, tool_results_collected, content, duration)
+            return (content, conversation_id)
 
         # Last resort: if still no content, construct a minimal response
         if tool_results_collected:
-            return f"**Investigation completed** but the model didn't generate a summary.\n\nTools used during investigation:\n" + "\n".join(f"- {r}" for r in tool_results_collected[:5]) + "\n\nPlease try rephrasing your question."
+            fallback = f"**Investigation completed** but the model didn't generate a summary.\n\nTools used during investigation:\n" + "\n".join(f"- {r}" for r in tool_results_collected[:5]) + "\n\nPlease try rephrasing your question."
+            save_message(conversation_id, "assistant", fallback)
+            return (fallback, conversation_id)
 
-        return "I wasn't able to complete the investigation. Please try a different question."
+        return ("I wasn't able to complete the investigation. Please try a different question.", conversation_id)
 
     except Exception as e:
-        return f"Error: {str(e)}"
+        return (f"Error: {str(e)}", conversation_id)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -641,6 +904,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "status_code": resp.status_code,
                 "response": resp.json() if resp.status_code == 200 else resp.text[:500]
             })
+        elif self.path == "/stats":
+            # Get investigation statistics from Lakebase
+            stats = {"lakebase_enabled": LAKEBASE_ENABLED}
+
+            if LAKEBASE_ENABLED:
+                try:
+                    # Total investigations
+                    result = execute_sql_internal(
+                        f"SELECT COUNT(*) FROM {LAKEBASE_CATALOG}.{LAKEBASE_SCHEMA}.investigations",
+                        return_data=True
+                    )
+                    stats["total_investigations"] = result[0][0] if result else 0
+
+                    # Average duration
+                    result = execute_sql_internal(
+                        f"SELECT AVG(duration_seconds) FROM {LAKEBASE_CATALOG}.{LAKEBASE_SCHEMA}.investigations WHERE duration_seconds IS NOT NULL",
+                        return_data=True
+                    )
+                    stats["avg_duration_seconds"] = round(float(result[0][0]), 2) if result and result[0][0] else 0
+
+                    # Investigations today
+                    result = execute_sql_internal(
+                        f"SELECT COUNT(*) FROM {LAKEBASE_CATALOG}.{LAKEBASE_SCHEMA}.investigations WHERE DATE(started_at) = CURRENT_DATE",
+                        return_data=True
+                    )
+                    stats["investigations_today"] = result[0][0] if result else 0
+
+                    # Total conversations
+                    result = execute_sql_internal(
+                        f"SELECT COUNT(*) FROM {LAKEBASE_CATALOG}.{LAKEBASE_SCHEMA}.conversations",
+                        return_data=True
+                    )
+                    stats["total_conversations"] = result[0][0] if result else 0
+
+                except Exception as e:
+                    stats["error"] = str(e)
+
+            self.send_json(stats)
         else:
             self.send_json({"error": "Not found"}, 404)
 
@@ -649,13 +950,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length)) if length else {}
             question = body.get("question", "")
+            conversation_id = body.get("conversation_id")  # Optional for follow-ups
 
             if not question:
                 self.send_json({"error": "No question provided"})
                 return
 
-            response = chat_with_llm(question)
-            self.send_json({"response": response})
+            response, conv_id = chat_with_llm(question, conversation_id)
+            self.send_json({
+                "response": response,
+                "conversation_id": conv_id  # Return for follow-up questions
+            })
         else:
             self.send_json({"error": "Not found"}, 404)
 

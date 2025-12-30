@@ -12,3 +12,15 @@ env:
     value: "https://<your-github-mcp-app>.databricksapps.com"
   - name: DATABRICKS_TOKEN
     value: "<your-databricks-pat-token>"
+  # Vector Search
+  - name: VS_ENDPOINT_NAME
+    value: "datascope-vs-endpoint"
+  - name: VS_INDEX_NAME
+    value: "novatech.gold.datascope_patterns_index"
+  # Lakebase State Management
+  - name: LAKEBASE_ENABLED
+    value: "true"
+  - name: LAKEBASE_CATALOG
+    value: "novatech"
+  - name: LAKEBASE_SCHEMA
+    value: "datascope"

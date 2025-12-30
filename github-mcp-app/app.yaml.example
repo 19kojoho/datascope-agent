@@ -1,0 +1,9 @@
+# Databricks App configuration for GitHub Code Search Server
+# This serves the novatech-transformations repository for code search
+command: ['python', 'simple_app.py']
+
+env:
+  - name: GITHUB_PERSONAL_ACCESS_TOKEN
+    value: "<your-github-pat>"
+  - name: GITHUB_REPO
+    value: "<owner>/<repo-name>"

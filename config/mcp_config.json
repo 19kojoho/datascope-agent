@@ -1,0 +1,53 @@
+{
+  "description": "MCP Server Configuration for DataScope Agent",
+  "notes": {
+    "databricks_managed": "These are Databricks-hosted MCP servers that use your workspace credentials",
+    "github": "GitHub MCP for searching transformation code in novatech-transformations repo",
+    "setup": "See docs/mcp_setup.md for detailed setup instructions"
+  },
+  "servers": {
+    "databricks_sql": {
+      "description": "Execute SQL queries against Databricks SQL Warehouse",
+      "type": "managed",
+      "url_template": "https://{workspace_host}/api/2.0/mcp/sql",
+      "capabilities": ["execute_sql", "query_data"],
+      "auth": "databricks_oauth"
+    },
+    "databricks_unity_catalog": {
+      "description": "Access Unity Catalog schemas, tables, and lineage",
+      "type": "managed",
+      "url_template": "https://{workspace_host}/api/2.0/mcp/functions/{catalog}/{schema}",
+      "capabilities": ["get_table_schema", "list_tables", "get_lineage"],
+      "auth": "databricks_oauth"
+    },
+    "databricks_vector_search": {
+      "description": "Query Vector Search indexes for pattern matching",
+      "type": "managed",
+      "url_template": "https://{workspace_host}/api/2.0/mcp/vector-search/{catalog}/{schema}",
+      "capabilities": ["similarity_search"],
+      "auth": "databricks_oauth",
+      "status": "optional - requires Vector Search index setup"
+    },
+    "github": {
+      "description": "Search and retrieve transformation code from GitHub",
+      "type": "external",
+      "server": "ghcr.io/github/github-mcp-server",
+      "repository": "19kojoho/novatech-transformations",
+      "capabilities": ["search_code", "get_file_contents", "list_files"],
+      "auth": "github_pat",
+      "env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"
+    }
+  },
+  "environment_variables": {
+    "required": [
+      "DATABRICKS_HOST",
+      "DATABRICKS_TOKEN",
+      "DATABRICKS_SQL_WAREHOUSE_ID",
+      "ANTHROPIC_API_KEY"
+    ],
+    "optional": [
+      "GITHUB_PERSONAL_ACCESS_TOKEN",
+      "MLFLOW_TRACKING_URI"
+    ]
+  }
+}

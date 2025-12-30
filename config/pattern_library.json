@@ -1,0 +1,176 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "description": "Common data quality patterns for semantic search. Index this in Databricks Vector Search.",
+    "usage": "Use with Vector Search to find similar past issues based on symptoms"
+  },
+  "patterns": [
+    {
+      "pattern_id": "PAT-001",
+      "title": "Timezone Mismatch Between Source Systems",
+      "category": "Data Quality",
+      "symptoms": [
+        "Records appear to be from the wrong time period",
+        "Activity looks delayed by several hours",
+        "Time-based filters miss recent data",
+        "Regional discrepancies (APAC/EMEA affected differently)",
+        "Customers marked as inactive despite recent logins"
+      ],
+      "root_cause": "Different source systems use different timezone conventions (UTC vs local time). When combined without conversion, timestamps are inconsistent.",
+      "investigation_sql": "SELECT customer_id, usage_timestamp, created_at_utc, created_at_local, TIMESTAMPDIFF(HOUR, created_at_local, created_at_utc) as hour_diff FROM silver.fct_subscriptions WHERE created_at_utc != created_at_local",
+      "resolution": "Standardize all timestamps to UTC at ingestion. Use CONVERT_TIMEZONE() or equivalent.",
+      "related_bugs": ["BUG-001"],
+      "databricks_features": ["Unity Catalog lineage", "Column-level lineage"]
+    },
+    {
+      "pattern_id": "PAT-002",
+      "title": "Late-Arriving Data Not Reflected in Status",
+      "category": "Data Quality",
+      "symptoms": [
+        "Status shows 'complete' but action hasn't finished",
+        "Discrepancy between reported status and actual state",
+        "Users complain status is wrong",
+        "Reconciliation issues with external systems"
+      ],
+      "root_cause": "Status calculation uses request/initiation timestamp instead of completion/processing timestamp.",
+      "investigation_sql": "SELECT payment_id, payment_date, processed_at, DATEDIFF(processed_at, payment_date) as delay_days FROM silver.fct_payments WHERE processed_at > payment_date",
+      "resolution": "Use completion timestamp for status calculations. Handle NULL completion timestamps as 'pending'.",
+      "related_bugs": ["BUG-002"],
+      "databricks_features": ["Delta Lake time travel", "Change data capture"]
+    },
+    {
+      "pattern_id": "PAT-003",
+      "title": "Aggregation Excludes Relevant Records",
+      "category": "Business Logic",
+      "symptoms": [
+        "Totals don't match between reports",
+        "Metrics consistently understated",
+        "Finance/business team reports different numbers",
+        "Specific segments or products missing from totals"
+      ],
+      "root_cause": "WHERE clause or JOIN condition filters out records that should be included.",
+      "investigation_sql": "SELECT product_type, SUM(mrr) * 12 as arr FROM silver.fct_subscriptions WHERE status = 'active' GROUP BY product_type",
+      "resolution": "Remove incorrect filters. Create separate metrics for filtered vs unfiltered totals.",
+      "related_bugs": ["BUG-003"],
+      "databricks_features": ["Unity Catalog search", "SQL warehouse query history"]
+    },
+    {
+      "pattern_id": "PAT-004",
+      "title": "Duplicate Records Inflating Metrics",
+      "category": "Data Quality",
+      "symptoms": [
+        "Metrics higher than expected",
+        "Record counts don't match source system",
+        "Reconciliation shows positive variance",
+        "Same ID appears multiple times"
+      ],
+      "root_cause": "Duplicate records from source system not deduplicated during ingestion.",
+      "investigation_sql": "SELECT payment_id, COUNT(*) as occurrences FROM silver.fct_payments GROUP BY payment_id HAVING COUNT(*) > 1",
+      "resolution": "Add deduplication using DISTINCT, ROW_NUMBER(), or QUALIFY. Implement idempotent ingestion.",
+      "related_bugs": ["BUG-004"],
+      "databricks_features": ["Delta Lake MERGE", "Structured Streaming deduplication"]
+    },
+    {
+      "pattern_id": "PAT-005",
+      "title": "NULL Values Not Handled in Conditional Logic",
+      "category": "Data Quality",
+      "symptoms": [
+        "NULL values in fields that should have values",
+        "Records missing from filtered results",
+        "CASE statements returning unexpected NULL",
+        "Aggregations excluding records silently"
+      ],
+      "root_cause": "CASE statements or WHERE clauses don't handle NULL cases.",
+      "investigation_sql": "SELECT COUNT(*) as null_count FROM gold.churn_predictions WHERE churn_risk IS NULL",
+      "resolution": "Add ELSE clause to CASE statements. Use COALESCE() for default values.",
+      "related_bugs": ["BUG-005"],
+      "databricks_features": ["Data quality expectations", "Unity Catalog column statistics"]
+    },
+    {
+      "pattern_id": "PAT-006",
+      "title": "Join Fanout Causing Row Multiplication",
+      "category": "Data Modeling",
+      "symptoms": [
+        "More rows than expected in output",
+        "Metrics change when unrelated data changes",
+        "Aggregations produce wrong results",
+        "Same entity appears multiple times"
+      ],
+      "root_cause": "1:N or N:M join creates cartesian product effect.",
+      "investigation_sql": "SELECT customer_id, COUNT(*) as row_count FROM gold.customer_health_scores GROUP BY customer_id HAVING COUNT(*) > 1",
+      "resolution": "Aggregate before joining. Use subqueries to flatten N side first.",
+      "related_bugs": ["BUG-006"],
+      "databricks_features": ["Query explain plans", "Adaptive query execution"]
+    },
+    {
+      "pattern_id": "PAT-007",
+      "title": "Schema Drift Breaking Downstream",
+      "category": "Pipeline",
+      "symptoms": [
+        "Pipeline failures after source system update",
+        "New columns appearing in source data",
+        "Changed column types causing errors",
+        "Missing columns in downstream tables"
+      ],
+      "root_cause": "Source system schema changed without coordination.",
+      "investigation_sql": "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'salesforce_accounts_raw' ORDER BY ordinal_position",
+      "resolution": "Implement schema validation at ingestion. Add explicit column selection.",
+      "related_bugs": ["BUG-007"],
+      "databricks_features": ["Schema evolution", "Delta Lake schema enforcement"]
+    },
+    {
+      "pattern_id": "PAT-008",
+      "title": "Incorrect Customer Classification",
+      "category": "Business Logic",
+      "symptoms": [
+        "Customer shows wrong status (active/churned)",
+        "Segment assignment incorrect",
+        "Risk level doesn't match behavior",
+        "Business team disputes classification"
+      ],
+      "root_cause": "Classification logic doesn't match current business rules.",
+      "investigation_sql": "SELECT customer_id, churn_risk, avg_logins, last_activity FROM gold.churn_predictions WHERE customer_id = 'CUST-XXXXX'",
+      "resolution": "Update classification logic to match business rules. Add documentation for thresholds.",
+      "related_bugs": ["BUG-001", "BUG-005"],
+      "databricks_features": ["MLflow model registry", "Feature Store"]
+    },
+    {
+      "pattern_id": "PAT-009",
+      "title": "Metric Discrepancy Between Reports",
+      "category": "Business Logic",
+      "symptoms": [
+        "Different reports show different values for same metric",
+        "Finance and ops teams have different numbers",
+        "Historical values don't match current calculations",
+        "Stakeholder confusion about source of truth"
+      ],
+      "root_cause": "Multiple definitions or calculations for the same metric.",
+      "investigation_sql": "SELECT 'gold' as source, SUM(arr) as total FROM gold.arr_by_customer UNION ALL SELECT 'silver', SUM(mrr)*12 FROM silver.fct_subscriptions WHERE status='active'",
+      "resolution": "Establish single source of truth. Document metric definitions.",
+      "related_bugs": ["BUG-003", "BUG-004"],
+      "databricks_features": ["Unity Catalog data lineage", "Business glossary"]
+    },
+    {
+      "pattern_id": "PAT-010",
+      "title": "Missing Historical Data",
+      "category": "Data Quality",
+      "symptoms": [
+        "Gaps in time series data",
+        "Historical trends look incomplete",
+        "YoY comparisons fail",
+        "Specific date ranges missing"
+      ],
+      "root_cause": "Data retention policies, failed backfills, or pipeline outages.",
+      "investigation_sql": "SELECT DATE_TRUNC('day', usage_date) as day, COUNT(*) FROM silver.fct_product_usage GROUP BY 1 ORDER BY 1",
+      "resolution": "Backfill missing data. Add data completeness monitoring.",
+      "related_bugs": [],
+      "databricks_features": ["Delta Lake time travel", "VACUUM retention"]
+    }
+  ],
+  "vector_search_config": {
+    "index_name": "datascope_patterns_index",
+    "embedding_model": "databricks-bge-large-en",
+    "text_columns": ["title", "symptoms", "root_cause", "resolution"],
+    "filter_columns": ["category", "pattern_id"]
+  }
+}

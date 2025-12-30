@@ -1,0 +1,5 @@
+# GitHub MCP Server Dependencies
+fastapi
+uvicorn
+httpx
+PyGithub

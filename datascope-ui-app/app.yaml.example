@@ -1,0 +1,14 @@
+# DataScope UI - Databricks App Configuration
+command: ['python', 'app.py']
+
+env:
+  - name: DATABRICKS_HOST
+    value: "https://<your-workspace>.cloud.databricks.com"
+  - name: LLM_ENDPOINT_NAME
+    value: "claude-sonnet-endpoint"
+  - name: DATABRICKS_SQL_WAREHOUSE_ID
+    value: "<your-sql-warehouse-id>"
+  - name: GITHUB_MCP_APP_URL
+    value: "https://<your-github-mcp-app>.databricksapps.com"
+  - name: DATABRICKS_TOKEN
+    value: "<your-databricks-pat-token>"

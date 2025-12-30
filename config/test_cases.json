@@ -1,0 +1,292 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "created": "2024-12-01",
+    "description": "Test cases for DataScope agent evaluation. Each maps to an Asana-style question.",
+    "catalog": "novatech"
+  },
+  "test_cases": [
+    {
+      "id": "TC-001",
+      "question": "Why is customer CUST-00042 marked as churn risk when they logged in yesterday?",
+      "category": "Classification Discrepancy",
+      "asana_equivalent": "Why is account XYZ marked as churn?",
+      "expected_bug": "BUG-001",
+      "expected_root_cause": "timezone_mismatch",
+      "description": "The churn prediction model uses local timestamps (PST) while usage data is in UTC. This 8-hour offset causes recent activity to appear outside the 30-day lookback window.",
+      "expected_tables": [
+        "novatech.gold.churn_predictions",
+        "novatech.silver.fct_product_usage"
+      ],
+      "expected_investigation_steps": [
+        "Check last_activity timestamp in churn_predictions for the customer",
+        "Compare with raw usage_timestamp in fct_product_usage",
+        "Identify timezone discrepancy (8 hour difference)",
+        "Trace to transformation code using local vs UTC"
+      ],
+      "success_criteria": [
+        "Agent identifies timezone mismatch as root cause",
+        "Agent references the 8-hour offset",
+        "Agent suggests standardizing to UTC"
+      ],
+      "difficulty": "medium",
+      "expected_time_minutes": 5
+    },
+    {
+      "id": "TC-002",
+      "question": "Why does our ARR dashboard show $125M but Finance reports $165M for this quarter?",
+      "category": "Metric Discrepancy",
+      "asana_equivalent": "Why does ARR show different values?",
+      "expected_bug": "BUG-003",
+      "expected_root_cause": "addon_products_excluded",
+      "description": "The ARR calculation in gold.arr_by_customer only includes 'Core Platform' subscriptions, excluding all addon products which represent ~24% of revenue.",
+      "expected_tables": [
+        "novatech.gold.arr_by_customer",
+        "novatech.silver.fct_subscriptions"
+      ],
+      "expected_investigation_steps": [
+        "Compare ARR totals between gold and silver layers",
+        "Identify that addon products are missing",
+        "Find WHERE clause filtering to 'Core Platform' only",
+        "Calculate impact (~24% revenue understatement)"
+      ],
+      "success_criteria": [
+        "Agent identifies addon exclusion as root cause",
+        "Agent calculates the variance percentage",
+        "Agent finds the WHERE clause in transformation"
+      ],
+      "difficulty": "easy",
+      "expected_time_minutes": 3
+    },
+    {
+      "id": "TC-003",
+      "question": "Why is revenue for November about 3% higher than what our payment processor Stripe shows?",
+      "category": "Data Integrity",
+      "asana_equivalent": "Why is this metric inflated?",
+      "expected_bug": "BUG-004",
+      "expected_root_cause": "duplicate_payments",
+      "description": "The revenue_recognition table sums all payments without deduplication. Approximately 3% of payments have duplicate records (same payment_id), causing revenue inflation.",
+      "expected_tables": [
+        "novatech.gold.revenue_recognition",
+        "novatech.silver.fct_payments",
+        "novatech.bronze.stripe_payments_raw"
+      ],
+      "expected_investigation_steps": [
+        "Count distinct payment_ids vs total rows",
+        "Identify ~3% duplicate rate",
+        "Find specific duplicate payment_ids",
+        "Calculate revenue impact"
+      ],
+      "success_criteria": [
+        "Agent identifies duplicate payments as root cause",
+        "Agent calculates duplicate percentage",
+        "Agent suggests deduplication fix"
+      ],
+      "difficulty": "medium",
+      "expected_time_minutes": 5
+    },
+    {
+      "id": "TC-004",
+      "question": "Why did customer CUST-00015's health score change when they just added a new subscription?",
+      "category": "Unexpected Change",
+      "asana_equivalent": "Why did this metric change unexpectedly?",
+      "expected_bug": "BUG-006",
+      "expected_root_cause": "join_fanout",
+      "description": "The customer_health_scores table joins customers to subscriptions (1:N), causing customers with multiple subscriptions to have their scores calculated multiple times. Adding a new subscription changes the row count.",
+      "expected_tables": [
+        "novatech.gold.customer_health_scores",
+        "novatech.silver.fct_subscriptions"
+      ],
+      "expected_investigation_steps": [
+        "Count rows per customer in health_scores table",
+        "Identify 1:N join with subscriptions",
+        "Check if customer recently added subscription",
+        "Show score calculation is duplicated per subscription"
+      ],
+      "success_criteria": [
+        "Agent identifies join fanout as root cause",
+        "Agent shows customer has multiple rows",
+        "Agent explains how subscription count affects aggregations"
+      ],
+      "difficulty": "hard",
+      "expected_time_minutes": 8
+    },
+    {
+      "id": "TC-005",
+      "question": "Why does customer CUST-00089 show as 'Current' on payments but they haven't actually paid in 45 days?",
+      "category": "Status Discrepancy",
+      "asana_equivalent": "Why is this customer classified incorrectly?",
+      "expected_bug": "BUG-002",
+      "expected_root_cause": "late_arriving_data",
+      "description": "Payment status uses payment_date instead of processed_at. For ~10% of payments, there's a 2-day processing delay not reflected in the status calculation.",
+      "expected_tables": [
+        "novatech.gold.payment_status_summary",
+        "novatech.silver.fct_payments"
+      ],
+      "expected_investigation_steps": [
+        "Compare payment_date vs processed_at for customer",
+        "Identify gap between booking and clearing",
+        "Show status logic uses wrong date field",
+        "Find payments that appear cleared but haven't processed"
+      ],
+      "success_criteria": [
+        "Agent identifies payment_date vs processed_at issue",
+        "Agent shows the processing delay",
+        "Agent suggests using processed_at for status"
+      ],
+      "difficulty": "medium",
+      "expected_time_minutes": 5
+    },
+    {
+      "id": "TC-006",
+      "question": "Why do some customers have NULL churn_risk even though they have active subscriptions?",
+      "category": "Data Quality",
+      "asana_equivalent": "Why is this data missing?",
+      "expected_bug": "BUG-005",
+      "expected_root_cause": "null_handling",
+      "description": "The CASE statement for churn_risk doesn't have an ELSE clause. Customers with NULL avg_logins (no recent activity) get NULL instead of 'High Risk'.",
+      "expected_tables": [
+        "novatech.gold.churn_predictions",
+        "novatech.silver.fct_product_usage"
+      ],
+      "expected_investigation_steps": [
+        "Find customers with NULL churn_risk",
+        "Check if they have activity in fct_product_usage",
+        "Identify missing ELSE clause in CASE statement",
+        "Show NULL propagation from LEFT JOIN"
+      ],
+      "success_criteria": [
+        "Agent identifies missing ELSE clause",
+        "Agent explains NULL propagation",
+        "Agent suggests adding ELSE 'High Risk'"
+      ],
+      "difficulty": "easy",
+      "expected_time_minutes": 3
+    },
+    {
+      "id": "TC-007",
+      "question": "Why did some customer records get NULL values in the new health_score_override field?",
+      "category": "Pipeline Issue",
+      "asana_equivalent": "Why is data missing after update?",
+      "expected_bug": "BUG-007",
+      "expected_root_cause": "schema_drift",
+      "description": "A new column 'health_score_override' was added to salesforce_accounts_raw. Some records have NULL values that may break downstream transformations.",
+      "expected_tables": [
+        "novatech.bronze.salesforce_accounts_raw"
+      ],
+      "expected_investigation_steps": [
+        "Check for NULL values in health_score_override",
+        "Identify this is a new column",
+        "Determine if downstream depends on this field",
+        "Suggest COALESCE or NULL handling"
+      ],
+      "success_criteria": [
+        "Agent identifies schema change",
+        "Agent finds NULL values in new column",
+        "Agent suggests NULL handling approach"
+      ],
+      "difficulty": "medium",
+      "expected_time_minutes": 4
+    },
+    {
+      "id": "TC-008",
+      "question": "What's the overall data quality of our customer health scores table?",
+      "category": "Open-ended Analysis",
+      "asana_equivalent": "Tell me about data quality issues",
+      "expected_bug": "BUG-005,BUG-006",
+      "expected_root_cause": "multiple_issues",
+      "description": "Open-ended question that should uncover multiple issues: NULL handling and join fanout.",
+      "expected_tables": [
+        "novatech.gold.customer_health_scores",
+        "novatech.gold.churn_predictions"
+      ],
+      "expected_investigation_steps": [
+        "Check for NULL values in key fields",
+        "Analyze row counts per customer",
+        "Identify data quality patterns",
+        "Summarize multiple issues found"
+      ],
+      "success_criteria": [
+        "Agent identifies multiple issues",
+        "Agent provides quantified impact for each",
+        "Agent prioritizes by severity"
+      ],
+      "difficulty": "hard",
+      "expected_time_minutes": 10
+    },
+    {
+      "id": "TC-009",
+      "question": "Is customer CUST-00250 at risk of churning?",
+      "category": "Simple Lookup",
+      "asana_equivalent": "Quick status check",
+      "expected_bug": "potentially BUG-001 or BUG-005",
+      "expected_root_cause": "depends_on_data",
+      "description": "Simple lookup that may or may not reveal bugs depending on the customer's data.",
+      "expected_tables": [
+        "novatech.gold.churn_predictions"
+      ],
+      "expected_investigation_steps": [
+        "Look up customer in churn_predictions",
+        "If NULL risk, investigate why",
+        "If marked as churn but active, investigate timezone"
+      ],
+      "success_criteria": [
+        "Agent provides clear answer",
+        "Agent notes any data quality concerns if present",
+        "Agent explains confidence level"
+      ],
+      "difficulty": "easy",
+      "expected_time_minutes": 2
+    },
+    {
+      "id": "TC-010",
+      "question": "Summarize all data issues affecting our revenue reporting accuracy",
+      "category": "Comprehensive Analysis",
+      "asana_equivalent": "Data audit request",
+      "expected_bug": "BUG-003,BUG-004",
+      "expected_root_cause": "multiple_issues",
+      "description": "Should find both ARR exclusion and duplicate payment issues.",
+      "expected_tables": [
+        "novatech.gold.arr_by_customer",
+        "novatech.gold.revenue_recognition",
+        "novatech.silver.fct_subscriptions",
+        "novatech.silver.fct_payments"
+      ],
+      "expected_investigation_steps": [
+        "Analyze ARR calculation for completeness",
+        "Check for duplicate payments",
+        "Compare totals across layers",
+        "Document all revenue-impacting issues"
+      ],
+      "success_criteria": [
+        "Agent finds both BUG-003 and BUG-004",
+        "Agent quantifies impact of each",
+        "Agent provides prioritized recommendations"
+      ],
+      "difficulty": "hard",
+      "expected_time_minutes": 12
+    }
+  ],
+  "evaluation_rubric": {
+    "root_cause_identification": {
+      "weight": 40,
+      "description": "Did the agent correctly identify the root cause?"
+    },
+    "evidence_quality": {
+      "weight": 25,
+      "description": "Did the agent provide SQL queries and data to support findings?"
+    },
+    "tables_investigated": {
+      "weight": 15,
+      "description": "Did the agent look at the right tables?"
+    },
+    "fix_recommendation": {
+      "weight": 10,
+      "description": "Did the agent suggest an appropriate fix?"
+    },
+    "efficiency": {
+      "weight": 10,
+      "description": "Did the agent solve it in reasonable time/steps?"
+    }
+  }
+}

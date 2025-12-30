@@ -123,9 +123,60 @@ print(f"Created test conversation: {conv_id}")
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Analytics Queries
+# MAGIC
+# MAGIC Run these queries to monitor DataScope usage:
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Daily investigation summary
+# MAGIC SELECT
+# MAGIC   DATE(started_at) as day,
+# MAGIC   COUNT(*) as investigations,
+# MAGIC   ROUND(AVG(duration_seconds), 2) as avg_duration_seconds,
+# MAGIC   SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful
+# MAGIC FROM novatech.datascope.investigations
+# MAGIC WHERE started_at >= CURRENT_DATE - INTERVAL 7 DAY
+# MAGIC GROUP BY 1
+# MAGIC ORDER BY 1 DESC
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Most common tools used
+# MAGIC SELECT
+# MAGIC   tool,
+# MAGIC   COUNT(*) as usage_count
+# MAGIC FROM (
+# MAGIC   SELECT EXPLODE(FROM_JSON(tools_used, 'ARRAY<STRING>')) as tool
+# MAGIC   FROM novatech.datascope.investigations
+# MAGIC   WHERE tools_used IS NOT NULL
+# MAGIC )
+# MAGIC GROUP BY tool
+# MAGIC ORDER BY usage_count DESC
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Recent investigations
+# MAGIC SELECT
+# MAGIC   question,
+# MAGIC   status,
+# MAGIC   duration_seconds,
+# MAGIC   started_at
+# MAGIC FROM novatech.datascope.investigations
+# MAGIC ORDER BY started_at DESC
+# MAGIC LIMIT 10
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Done!
 # MAGIC
 # MAGIC Lakebase tables created:
 # MAGIC - `novatech.datascope.conversations` - Conversation sessions
 # MAGIC - `novatech.datascope.messages` - Individual messages
-# MAGIC - `novatech.datascope.investigations` - Investigation metadata for analytics
+# MAGIC - `novatech.datascope.investigations` - Investigation metadata & analytics
+# MAGIC
+# MAGIC Use the `/stats` endpoint in the UI app to get real-time metrics.

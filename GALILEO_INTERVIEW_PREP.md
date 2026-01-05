@@ -191,39 +191,136 @@ This is the key insight from building three versions:
 
 ---
 
-## Specific Galileo Value Props You Experienced
+## Real Issues We Encountered (Galileo Debugging Stories)
 
-### 1. Debugging Tool Selection
+These are **actual issues** from building DataScope - the kind of war stories interviewers love.
 
-**Problem**: Agent was calling `execute_sql` with broad queries instead of counting first.
+---
 
-**How Galileo helped**: Trace showed the system prompt didn't emphasize "count first". I could see Claude's reasoning path and realize it was following a different heuristic.
+### Issue 1: The Hanging Agent (Most Important Story)
 
-**Fix**: Updated system prompt to say "Always COUNT affected records before sampling data."
+**What happened**: User asks "Why does ARR show $125M but Finance reports $165M?" The agent calls several tools, shows partial results in the UI... then **hangs forever**. No error, no completion, just stuck.
 
-### 2. Identifying Slow Tools
+**The debugging nightmare without observability**:
+- MCP server logs showed all tools completed successfully
+- Browser console showed streaming was still "open"
+- No idea where in the agent loop things got stuck
 
-**Problem**: Some investigations took 60+ seconds.
+**What Galileo would have shown immediately**:
+```
+Trace: investigation-abc123
+├─ LLM Call #1: 3200ms ✓
+├─ Tool: execute_sql: 1800ms ✓
+├─ LLM Call #2: 2900ms ✓
+├─ Tool: search_code: 950ms ✓ (returned 0 results)
+├─ LLM Call #3: ??? ← STILL RUNNING / NEVER COMPLETED
+```
 
-**How Galileo helped**: Span durations showed `execute_sql` taking 10+ seconds on certain queries. The SQL was doing full table scans.
+**Root cause discovered**: The streaming loop had a bug where if Claude returned `stop_reason: 'end_turn'` but ALSO included tool calls, we only processed the text and ignored the tools. The agent was waiting for tool results that were never executed.
 
-**Fix**: Added query optimization guidance to tool descriptions.
+**The fix**: Simplified the loop - don't try to predict "end_turn", just check if there are tools. If tools exist, execute them. If not, we're done.
 
-### 3. Understanding Multi-Turn Behavior
+**Interview soundbite**:
+> "Without tracing, I spent 2 hours adding console.logs everywhere. With Galileo, I would have seen in 30 seconds that LLM Call #3 never completed because the tool results from Call #2 were malformed."
 
-**Problem**: Agent was sometimes "forgetting" earlier findings in long investigations.
+---
 
-**How Galileo helped**: Trace showed token counts growing with each turn. Context was getting truncated. Earlier findings were being pushed out.
+### Issue 2: The Empty Tool Inputs
 
-**Fix**: Implemented summarization for long conversations.
+**What happened**: Anthropic API returned a cryptic error: `"tool_use ids were found without tool_result blocks immediately after"`
 
-### 4. Catching Hallucinations
+**What was actually broken**: During streaming, we built tool_use blocks incrementally from deltas. But the `input` field came in separate delta events - which we captured but never assembled. So our conversation history had:
+```json
+{ "type": "tool_use", "name": "execute_sql", "input": {} }  // Empty!
+```
 
-**Problem**: Agent claimed "no NULL values found" but there were 847.
+**What Galileo traces showed**: The LLM span output had malformed content blocks. Comparing what Claude sent vs what we stored in history revealed the mismatch immediately.
 
-**How Galileo helped**: Trace showed agent ran `SELECT * FROM table LIMIT 10` instead of `SELECT COUNT(*) WHERE ... IS NULL`. It sampled and didn't see NULLs by chance.
+**The fix**: Don't build state from streaming deltas. Use `finalMessage()` which has complete, validated content blocks.
 
-**Fix**: System prompt now says "Never conclude from samples. Always use aggregate queries for counts."
+**Interview soundbite**:
+> "Streaming deltas are for UI responsiveness, not for building state. Galileo showed me the exact content block that was malformed - the input was empty. That's a 5-second diagnosis that took me an hour without it."
+
+---
+
+### Issue 3: The Invisible Production Traffic
+
+**What happened**: I had Galileo tracing working in my test method, but **zero traces appeared from real user traffic**.
+
+**Root cause**: I had two methods:
+- `investigate()` - Non-streaming, had Galileo tracing
+- `streamInvestigation()` - Streaming, **no tracing**
+
+The API route used streaming. So 100% of production traffic was untraced.
+
+**The meta-lesson**: This is exactly why you need observability. I thought tracing was working because my tests passed. But I wasn't testing the actual code path users hit.
+
+**Interview soundbite**:
+> "I had a blind spot - my tests used the non-streaming method, but production used streaming. Galileo showed me zero traces, which was itself valuable information. It told me my instrumentation wasn't in the hot path."
+
+---
+
+### Issue 4: GitHub Search Returning Zero Results
+
+**What happened**: User asked about a data issue. The agent called `search_code` to find relevant SQL files. Investigation completed but missed key evidence.
+
+**What Galileo trace showed**:
+```
+Tool: search_code - 953ms
+  Input: {"query": "timezone"}
+  Output: {"files_searched": 0, "files_matched": 0, "results": []}
+```
+
+**Immediate diagnosis**: GitHub API wasn't returning results. Either auth was wrong or the repo wasn't indexed.
+
+**What I found**: GitHub token wasn't configured in the MCP server. The tool returned gracefully (no error), but with zero results. Without the trace, I might have thought "there's just no relevant code."
+
+**Interview soundbite**:
+> "The agent didn't crash - it just gave an incomplete answer. Galileo showed me the tool returned zero results despite relevant code existing. That's a silent failure that's almost impossible to catch without tracing."
+
+---
+
+### Issue 5: Durations Showing as Zero
+
+**What happened**: Everything worked, traces appeared in Galileo dashboard, but all durations showed as **0ms** or **0.001ms**.
+
+**Root cause**: Galileo SDK expects nanoseconds. I was passing milliseconds.
+
+```typescript
+// WRONG
+durationNs: span.durationMs  // 3000 interpreted as 3000ns = 0.003ms
+
+// CORRECT
+durationNs: span.durationMs * 1_000_000  // 3000ms = 3,000,000,000ns
+```
+
+**Interview soundbite**:
+> "This is a subtle bug. The code works, data flows, but the numbers are wrong by a factor of a million. I only caught it because I knew a 45-second investigation shouldn't show 0ms in the dashboard."
+
+---
+
+### Issue 6: SDK API Surprise
+
+**What happened**: Following Galileo docs, I wrote:
+```typescript
+const trace = await logger.startTrace({...})
+await trace.addLlmSpan({...})  // TypeError: not a function
+```
+
+**Root cause**: The SDK uses a stateful logger pattern, not an object-oriented trace pattern. Methods are on the `GalileoLogger`, not on a returned trace object.
+
+```typescript
+// CORRECT
+logger.startTrace(input, output, name, ...)
+logger.addLlmSpan({...})
+logger.conclude({...})
+await logger.flush()
+```
+
+**How I debugged**: Read the actual SDK source on GitHub instead of relying on docs.
+
+**Interview soundbite**:
+> "Newer SDKs sometimes have doc/implementation mismatches. I've learned to verify against the actual code. This is feedback I'd share with Galileo's team - the TypeScript SDK could use clearer examples."
 
 ---
 

@@ -1,0 +1,16 @@
+# DataScope LangGraph Agent Dependencies
+
+# LangGraph - Agent orchestration
+langgraph>=0.2.50
+
+# LangChain - LLM and tools
+langchain-core>=0.3.20
+langchain-openai>=0.3.0
+
+# HTTP requests
+requests>=2.31.0
+
+# Galileo AI - Observability and Evaluation
+# Enables tracing, debugging, and quality evaluation
+# Get API key from: https://console.galileo.ai/
+galileo>=1.0.0

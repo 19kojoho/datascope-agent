@@ -1,0 +1,55 @@
+# DataScope LangGraph - Databricks App Configuration
+# Copy this to app.yaml and fill in your values
+
+command: ['python', 'app.py']
+
+env:
+  # Databricks Connection (Required)
+  - name: DATABRICKS_HOST
+    value: "https://<your-workspace>.cloud.databricks.com"
+  - name: DATABRICKS_TOKEN
+    value: "<your-databricks-pat-token>"
+
+  # LLM Endpoint (Required)
+  - name: LLM_ENDPOINT_NAME
+    value: "claude-sonnet-endpoint"
+
+  # SQL Warehouse (Required)
+  - name: DATABRICKS_SQL_WAREHOUSE_ID
+    value: "<your-sql-warehouse-id>"
+
+  # GitHub MCP for Code Search (Optional)
+  - name: GITHUB_MCP_APP_URL
+    value: "https://<your-github-mcp-app>.databricksapps.com"
+
+  # Vector Search for Pattern Matching (Optional)
+  - name: VS_ENDPOINT_NAME
+    value: "datascope-vs-endpoint"
+  - name: VS_INDEX_NAME
+    value: "novatech.gold.datascope_patterns_index"
+
+  # Lakebase for Analytics (Optional)
+  - name: LAKEBASE_ENABLED
+    value: "true"
+  - name: LAKEBASE_CATALOG
+    value: "novatech"
+  - name: LAKEBASE_SCHEMA
+    value: "datascope"
+
+  # Galileo AI - Observability and Evaluation (Optional but Recommended)
+  # Get your API key from: https://console.galileo.ai/
+  # When enabled, all LLM calls and tool executions are traced for debugging
+  - name: GALILEO_API_KEY
+    valueFrom: galileo-api-key  # Store as Databricks secret
+  - name: GALILEO_PROJECT
+    value: "datascope-langgraph"
+  - name: GALILEO_LOG_STREAM
+    value: "investigations"
+
+  # State Persistence
+  - name: CHECKPOINT_DIR
+    value: "./checkpoints"
+
+  # Server
+  - name: PORT
+    value: "8000"

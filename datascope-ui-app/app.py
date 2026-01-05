@@ -160,37 +160,58 @@ def save_message(conversation_id: str, role: str, content: str, tool_calls: str 
         return None
 
 
-def load_conversation_messages(conversation_id: str, limit: int = 20) -> list:
-    """Load recent messages for a conversation from Lakebase."""
+def get_conversation_summary(conversation_id: str) -> str:
+    """Get a summary of previous conversation turns for context.
+
+    Returns a text summary of previous Q&A pairs that can be injected
+    into the system prompt without causing tool_call/tool_result issues.
+    """
     if not LAKEBASE_ENABLED:
-        return []
+        return ""
     try:
         table = f"{LAKEBASE_CATALOG}.{LAKEBASE_SCHEMA}.messages"
+        # Get previous user questions and assistant answers (skip the current one)
         query = f"""
-        SELECT role, content, tool_calls, tool_call_id
+        SELECT role, content
         FROM {table}
         WHERE conversation_id = '{conversation_id}'
-        ORDER BY created_at DESC
-        LIMIT {limit}
+          AND role IN ('user', 'assistant')
+          AND content IS NOT NULL
+          AND LENGTH(content) > 10
+        ORDER BY created_at ASC
         """
         result = execute_sql_internal(query, return_data=True)
-        if not result:
-            return []
+        if not result or len(result) < 2:
+            return ""
 
-        # Convert to message format and reverse (oldest first)
-        messages = []
-        for row in reversed(result):
-            role, content, tool_calls, tool_call_id = row
-            msg = {"role": role, "content": content or ""}
-            if tool_calls:
-                msg["tool_calls"] = json.loads(tool_calls)
-            if tool_call_id:
-                msg["tool_call_id"] = tool_call_id
-            messages.append(msg)
-        return messages
+        # Build summary of previous exchanges (exclude the last user message - that's the current one)
+        summary_parts = []
+        exchanges = []
+
+        # Pair up user/assistant messages
+        i = 0
+        while i < len(result) - 1:  # -1 to skip current question
+            if result[i][0] == 'user' and i + 1 < len(result) and result[i + 1][0] == 'assistant':
+                user_q = result[i][1][:200]  # Truncate for brevity
+                asst_a = result[i + 1][1][:500]  # Keep more of the answer
+                exchanges.append((user_q, asst_a))
+                i += 2
+            else:
+                i += 1
+
+        if not exchanges:
+            return ""
+
+        # Format as context summary (only include last 2 exchanges to save tokens)
+        for q, a in exchanges[-2:]:
+            summary_parts.append(f"User asked: \"{q}\"")
+            summary_parts.append(f"You found: \"{a[:400]}{'...' if len(a) > 400 else ''}\"")
+            summary_parts.append("")
+
+        return "## Previous Context\n\n" + "\n".join(summary_parts)
     except Exception as e:
-        print(f"Error loading messages: {e}")
-        return []
+        print(f"Error getting conversation summary: {e}")
+        return ""
 
 
 def save_investigation(conversation_id: str, question: str, tools_used: list, summary: str, duration: float) -> str:
@@ -712,15 +733,17 @@ def chat_with_llm(question: str, conversation_id: str = None) -> tuple:
         }
     ]
 
-    # Load conversation history if exists
-    history = load_conversation_messages(conversation_id)
+    # Build messages with context from previous turns
+    # We inject a summary of previous Q&A into the system prompt
+    # This avoids tool_use/tool_result pairing issues with Anthropic's API
+    context_summary = get_conversation_summary(conversation_id)
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if context_summary:
+        system_content = SYSTEM_PROMPT + "\n\n" + context_summary + "\n\nNow answer the user's follow-up question using the context above."
+    else:
+        system_content = SYSTEM_PROMPT
 
-    # Add history (excluding system messages)
-    for msg in history:
-        if msg.get("role") != "system":
-            messages.append(msg)
+    messages = [{"role": "system", "content": system_content}]
 
     # Add current question
     messages.append({"role": "user", "content": question})
@@ -771,7 +794,17 @@ def chat_with_llm(question: str, conversation_id: str = None) -> tuple:
                     return (content, conversation_id)
 
             # Execute tool calls
-            messages.append(msg)
+            # Build assistant message - only include content if non-empty
+            # For tool calls without content, omit the content field entirely
+            assistant_msg = {"role": "assistant", "tool_calls": tool_calls}
+            if content and content.strip():
+                assistant_msg["content"] = content
+            else:
+                # Anthropic requires content to be non-empty if present
+                # So we omit it entirely when there's no content
+                pass
+            messages.append(assistant_msg)
+
             for tc in tool_calls:
                 fn = tc.get("function", {})
                 name = fn.get("name", "")

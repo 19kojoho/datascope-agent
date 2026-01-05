@@ -10,8 +10,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Python build artifacts (but not TypeScript lib folders)
+/lib/
 lib64/
+!datascope-vercel-app/lib/
 parts/
 sdist/
 var/
@@ -63,3 +65,9 @@ Thumbs.db
 # Databricks App configs with secrets
 datascope-ui-app/app.yaml
 github-mcp-app/app.yaml
+datascope-langgraph-app/app.yaml
+
+# LangGraph checkpoints (SQLite state)
+datascope-langgraph-app/checkpoints/
+node_modules/
+.next/

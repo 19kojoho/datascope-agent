@@ -1,0 +1,46 @@
+# Databricks Apps Configuration for DataScope MCP Server
+#
+# This is a CUSTOM MCP server that acts as a single gateway for all tools.
+# It keeps all secrets (Databricks, GitHub) in Databricks, not in Vercel.
+#
+# Authentication: Static token (simple mode)
+# The proper OAuth approach is documented in DESIGN_DECISIONS.md
+
+command: ['gunicorn', '-b', '0.0.0.0:8000', '-w', '2', '--timeout', '120', 'app:app']
+
+env:
+  # Databricks Configuration
+  - name: DATABRICKS_HOST
+    valueFrom: databricks-host
+  - name: DATABRICKS_TOKEN
+    valueFrom: databricks-token
+  - name: SQL_WAREHOUSE_ID
+    valueFrom: sql-warehouse-id
+  - name: VS_INDEX
+    valueFrom: vs-index
+
+  # GitHub Configuration
+  - name: GITHUB_TOKEN
+    valueFrom: github-token
+  - name: GITHUB_OWNER
+    value: "novatech"
+  - name: GITHUB_REPO
+    value: "novatech-transformations"
+
+  # Static Token Authentication (Simple Mode)
+  # Used when OAuth SP is not available in the Databricks account
+  - name: MCP_AUTH_TOKEN
+    valueFrom: mcp-auth-token
+
+  # OAuth disabled - SP not available in Databricks account
+  # Uncomment when OAuth SP is properly configured:
+  # - name: ALLOWED_SP_APP_ID
+  #   value: "your-sp-application-id"
+
+  # Galileo AI - Observability and Evaluation
+  - name: GALILEO_API_KEY
+    valueFrom: galileo-api-key
+  - name: GALILEO_PROJECT
+    value: "datascope-mcp"
+  - name: GALILEO_LOG_STREAM
+    value: "mcp-tools"

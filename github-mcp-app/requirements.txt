@@ -1,5 +1,3 @@
-# GitHub MCP Server Dependencies
-fastapi
-uvicorn
-httpx
-PyGithub
+# GitHub Code Search MCP Server Dependencies
+# Manual MCP implementation - only needs requests for GitHub API
+requests>=2.31.0

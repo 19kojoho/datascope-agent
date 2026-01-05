@@ -1,0 +1,7 @@
+# Databricks MCP Server Dependencies
+flask==3.0.0
+requests==2.32.3
+gunicorn==21.2.0
+
+# Galileo AI - Observability and Evaluation
+galileo==1.0.0

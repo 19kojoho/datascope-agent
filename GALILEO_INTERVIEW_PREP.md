@@ -128,66 +128,127 @@ User asks: "Why do some customers have NULL churn_risk?"
 
 ---
 
-## Observability Comparison: MLflow vs LangGraph vs Galileo
+## Observability Comparison: MLflow vs LangSmith vs Galileo (Researched)
 
-This is the key insight from building three versions:
+**Important**: MLflow has significantly improved its LLM tracing since v2.14 (2024). This is a nuanced comparison based on current capabilities.
 
-### MLflow/Lakebase (Databricks)
+### MLflow Tracing (Current State - v3.x)
+
+**What it now captures** (much better than before):
+- Full trace/span hierarchy for LLM applications
+- Auto-tracing for 20+ frameworks (LangChain, OpenAI, LlamaIndex, DSPy, Anthropic)
+- Tool call capture with inputs/outputs
+- Token counts, latency, cost tracking
+- OpenTelemetry compatible
+
+**Strengths**:
+- **Open source and free** - no SaaS costs
+- **Huge ecosystem** - integrations keep appearing
+- **Enterprise backing** - managed on Databricks, AWS SageMaker, Azure ML
+- **Full ML lifecycle** - experiment tracking, model registry, deployment
+
+**Trade-offs**:
+- **Requires custom dashboard work** - specialized views (hallucination rates, context drift) need Grafana/custom viz
+- **Generalist, not specialist** - built for all ML, extended to LLMs
+- **No built-in guardrails** - need to wire up separately
+- **No specialized evaluation models** - LLM-as-judge via generic scorers
+
+**Good for**: Teams already in MLflow ecosystem, cost-conscious teams, teams who want open-source
+
+### LangSmith (LangChain)
 
 **What it captures**:
-- Model metrics (latency, throughput)
-- Input/output logging
-- Model versioning
+- Deep LangChain integration (chains, agents, tools)
+- Trace structure with LangChain-specific semantics
+- Prompt playground and versioning
+- Human feedback collection
 
-**What's missing for agents**:
-- **No trace structure** - doesn't understand that 4 LLM calls belong to one investigation
-- **No tool call semantics** - sees HTTP requests, not "agent called execute_sql"
-- **No reasoning visibility** - can't see why the model chose a tool
+**Strengths**:
+- **Best-in-class for LangChain** - if you're all-in, nothing beats it
+- **Prompt engineering tools** - built-in experimentation
+- **Dataset management** - for evaluation datasets
 
-**Good for**: Traditional ML models, batch inference, A/B testing models
+**Trade-offs**:
+- **LangChain-centric** - harder to use with raw SDKs or other frameworks
+- **Abstractions can obscure** - you see "AgentExecutor" not the raw prompt
+- **Vendor lock-in** - tied to LangChain ecosystem
 
-**Not good for**: Multi-turn agents where you need to trace a sequence of decisions
-
-### LangGraph/LangSmith
-
-**What it captures**:
-- Trace structure (parent/child spans)
-- LangChain-specific abstractions (chains, tools, agents)
-- Token counts and latency
-
-**What's different**:
-- Deeply integrated with LangChain ecosystem
-- Abstractions can hide details (you see "AgentExecutor" not the raw prompt)
-- Great if you're fully in LangChain
-
-**Good for**: Teams standardized on LangChain who want integrated observability
-
-**Challenge**: When you step outside LangChain patterns, instrumentation gets harder
+**Good for**: Teams standardized on LangChain
 
 ### Galileo
 
 **What it captures**:
-- Full trace structure (traces → spans)
-- LLM-native semantics (prompts, completions, tool calls)
-- Works with any framework (Anthropic, OpenAI, LangChain, custom)
+- Full trace/span structure
+- Framework-agnostic (works with any LLM SDK)
+- Built-in evaluation metrics (20+ out-of-box)
+- Real-time guardrails
 
-**What makes it different**:
-- **Framework agnostic** - I used raw Anthropic SDK, still got full traces
-- **LLM-first design** - understands prompts, completions, tokens natively
-- **Evaluation hooks** - can score traces after the fact
-- **Clear data model** - trace contains spans, spans have inputs/outputs/duration
+**Unique Differentiators** (What MLflow doesn't have):
 
-**Good for**: Teams building custom agents, teams using multiple frameworks, teams who need to see exactly what's happening
+1. **Luna Evaluation Models**:
+   - Purpose-built 440M parameter models for hallucination detection
+   - 97% cheaper and 91% faster than GPT-3.5-as-judge
+   - 18% more accurate than GPT-3.5 on hallucination detection
+   - Runs at millisecond latency for real-time use
 
-### The Key Difference (What to Tell the Hiring Manager)
+2. **Real-Time Guardrails (Galileo Protect)**:
+   - Intercept harmful outputs BEFORE they reach users
+   - Block hallucinations, PII leaks, prompt injections
+   - "Today's evals become tomorrow's guardrails"
 
-> "MLflow thinks in terms of **models** - it's great for 'I deployed a model, how's it performing?' But agents aren't single models, they're **orchestrated sequences of model calls and tool calls**.
+3. **Agent-Specific Failure Detection**:
+   - Insights Engine surfaces agent failures: tool errors, planning breakdowns, infinite loops
+   - Not generic observability - LLM/agent-specific patterns
+
+4. **Turnkey Specialized Dashboards**:
+   - See cost, latency, failures, evaluation scores in one view
+   - No Grafana wiring needed
+
+**Trade-offs**:
+- **Enterprise contracts** - not free/open-source
+- **Newer platform** - smaller community than MLflow
+
+**Good for**: Teams building production agents who need evaluation + guardrails, not just logging
+
+---
+
+### The Accurate Comparison (What to Tell the Hiring Manager)
+
+> "MLflow has gotten much better at LLM tracing - they now have full span hierarchies and auto-tracing for major frameworks. It's a solid choice, especially if you're already in the Databricks ecosystem.
 >
-> LangSmith thinks in terms of **LangChain abstractions** - it's great if you're using Chains and Agents from their library.
+> But here's what Galileo does that MLflow doesn't:
 >
-> Galileo thinks in terms of **LLM interactions** - traces, prompts, completions, tools. It doesn't care if I'm using LangChain, raw OpenAI, or Anthropic. It captures what matters: what did the model see, what did it return, how long did it take.
+> 1. **Luna models** - Galileo has purpose-built evaluation models that are 97% cheaper than using GPT-3.5 as a judge. MLflow uses generic LLM-as-judge which is slow and expensive at scale.
 >
-> For my agent, I needed to debug questions like 'why did it call execute_sql before search_patterns?' That requires seeing the actual prompt and understanding the decision. Galileo gives me that."
+> 2. **Real-time guardrails** - Galileo can intercept hallucinations before they reach users. MLflow traces what happened; Galileo can prevent bad things from happening.
+>
+> 3. **Agent-specific insights** - Galileo's Insights Engine surfaces agent failure patterns - infinite loops, tool errors, planning breakdowns. MLflow shows you spans; Galileo tells you what went wrong.
+>
+> For my DataScope agent, I needed to understand why investigations failed. MLflow would show me the spans. Galileo shows me the spans AND tells me 'this looks like a context adherence failure' or 'the tool returned empty results.'
+>
+> The meta-point: MLflow is observability. Galileo is observability + evaluation + guardrails. If you just need to see what happened, MLflow works. If you need to ensure quality and catch failures, Galileo is purpose-built for that."
+
+---
+
+### Quick Reference Table
+
+| Capability | MLflow | LangSmith | Galileo |
+|------------|--------|-----------|---------|
+| **Trace/Span Structure** | ✅ Yes (v2.14+) | ✅ Yes | ✅ Yes |
+| **Auto-tracing** | ✅ 20+ frameworks | ✅ LangChain | ✅ Framework-agnostic |
+| **Tool Call Capture** | ✅ Yes | ✅ Yes | ✅ Yes |
+| **Open Source** | ✅ Yes | ❌ No | ❌ No |
+| **Specialized Eval Models** | ❌ Generic LLM-judge | ❌ Generic | ✅ Luna (purpose-built) |
+| **Real-time Guardrails** | ❌ No | ❌ No | ✅ Galileo Protect |
+| **Agent Failure Detection** | ❌ Manual | ❌ Manual | ✅ Insights Engine |
+| **Turnkey Dashboards** | ❌ DIY | ✅ Yes | ✅ Yes |
+| **Cost** | Free | Paid | Enterprise |
+
+**Sources**:
+- [MLflow Tracing Docs](https://mlflow.org/docs/latest/llms/tracing/index.html)
+- [Galileo Luna Paper](https://arxiv.org/html/2406.00975v2)
+- [Galileo Platform](https://galileo.ai/)
+- [MLflow vs Galileo Comparison](https://galileo.ai/blog/best-llm-observability-tools-compared-for-2024)
 
 ---
 
